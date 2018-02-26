@@ -1,0 +1,205 @@
+#!/bin/bash
+#
+# Author: Alejandro Sanchez Acosta
+#
+# Copyright (c) 2018 Adobe Systems Incorporated. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+source config
+
+show_help() {
+  USAGE="$(basename "$0") [-h] [-s server] [-t task] [-k taskid] -- tool to manage DCOS clusters
+
+where:
+    -h  show this help text
+    -s  ethos server
+    -t  task name (List all tasks: all)
+    -k  restart specified task id with -a
+    -a  app id
+    -m  mesos command (Ex: slaves, flags, health, metrics, state, state-summary, tasks, roles, version, frameworks)
+    -n  marathon command (Ex: metrics, v2/leader, v2/info, v2/queue, v2/deployments)
+    -v  verbose
+    -e  edit app (needs -a app, inplace updates)
+    -f  filter by parameter
+    -d  show deployments
+    -l  list apps
+    -p  package options (install, search, uninstall, list)
+    -b  create and solve Pagerduty incident
+
+  mesos API: http://mesos.apache.org/documentation/latest/endpoints/
+  marathon API: https://mesosphere.github.io/marathon/docs/rest-api.html"
+
+  echo "$USAGE"
+}
+
+while getopts "h?ves:a:t:km:n:f:dlp:jz:y:b:" opt; do
+    case "$opt" in
+    h|\?)
+        show_help
+        ;;
+    v)  VERBOSE=1
+        ;;
+    f)  FILTER=$OPTARG
+        ;;
+    s)  SERVER=$OPTARG
+        if [[ $SERVER =~ 'sandbox' ]]
+        then
+          DCOS_USERNAME=$DCOS_USERNAME_SANDBOX
+          DCOS_PASSWORD=$DCOS_PASSWORD_SANDBOX
+        fi
+        if [[ $SERVER =~ 'dev' ]]
+        then
+          DCOS_USERNAME=$DCOS_USERNAME_DEV
+          DCOS_PASSWORD=$DCOS_PASSWORD_DEV
+        fi
+        if [[ $SERVER =~ 'stage' ]]
+        then
+          DCOS_USERNAME=$DCOS_USERNAME_STAGE
+          DCOS_PASSWORD=$DCOS_PASSWORD_STAGE
+        fi
+        if [[ $SERVER =~ 'prod' ]]
+        then
+          DCOS_USERNAME=$DCOS_USERNAME_PROD
+          DCOS_PASSWORD=$DCOS_PASSWORD_PROD
+        fi
+        if [[ $VERBOSE == 1 ]]
+        then
+          echo "curl -s -u \'${DCOS_USERNAME}:${DCOS_PASSWORD}\' https://${SERVER}/acs/api/v1/auth/locallogin | jq -r .token"
+        fi
+        TOKEN=$(curl -s -u "${DCOS_USERNAME}:${DCOS_PASSWORD}" https://${SERVER}/acs/api/v1/auth/locallogin | jq -r .token)
+        ;;
+    a)  APP=$OPTARG
+        if [[ $OPTARG == "all" ]]
+        then
+          curl -s -H "Authorization: token=${TOKEN}" https://${SERVER}/service/marathon/v2/apps | jq -r '.apps[] | "Id: \(.id) AppId: \(.appId) Host: \(.host)"'
+        else
+          curl -s -H "Authorization: token=${TOKEN}" https://${SERVER}/service/marathon/v2/apps/${APP} | jq -r '.[] | .tasks[] | "Id: \(.id) AppId: \(.appId) Host: \(.host)"'
+        fi
+        ;;
+    t)  TASK=$OPTARG
+        if [[ $OPTARG == "all" ]]
+        then
+          curl -s -H "Authorization: token=${TOKEN}" https://${SERVER}/service/marathon/v2/tasks | jq -r '.tasks[] | .id'
+        else
+      	   if [[ $VERBOSE == 1 ]]
+           then
+             curl -s -H "Authorization: token=${TOKEN}" https://${SERVER}/service/marathon/v2/apps/${TASK} | jq '.'
+           else
+             curl -s -H "Authorization: token=${TOKEN}" https://${SERVER}/service/marathon/v2/apps/${TASK} | jq -r '.[] | .tasks[] | "Id: \(.id) AppId: \(.appId) Host: \(.host)"' # "\(.AutoScalingGroupName) Min: \(.MinSize) Max: \(.MaxSize) Desired: \(.DesiredCapacity)"'
+        	 fi
+        fi
+        ;;
+    k)  if [[ $APP != "" ]]
+        then
+          curl -s -H "Authorization: token=${TOKEN}" -X POST https://${SERVER}/service/marathon/v2/apps/${APP}/restart | jq .
+        fi
+        if [[ $TASK != "" ]]
+        then
+          TDATA='{"ids":["'${TASK}'"]}'
+          TLENGHT=$((${#TDATA}+1))
+          TIMESTAMP=$(date +%s)
+          if [[ $VERBOSE == 1 ]]
+          then
+            echo "curl -H \"Authorization: token=${TOKEN}\" -H \"Accept: application/json\" -H \"Accept-Encoding: gzip, deflate, compress\" -H \"Content-Length: ${TLENGHT}\" -H \"Content-Type: application/json; charset=UTF-8\" https://${SERVER}/service/marathon/v2/tasks/delete?_timestamp=${TIMESTAMP} --data-binary '${TDATA}' --compressed | jq .'"
+          fi
+          curl https://${SERVER}/service/marathon/v2/tasks/delete?_timestamp=${TIMESTAMP} -H "Authorization: token=${TOKEN}" -H 'Origin: ${SERVER}' -H 'Accept-Encoding: gzip, deflate, br' -H 'Accept-Language: en,es;q=0.8' -H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.113 Safari/537.36' -H 'Content-Type: application/json; charset=UTF-8' -H 'Accept: application/json, text/javascript' -H 'Referer: https://${SERVER}/' -H 'X-Requested-With: XMLHttpRequest' -H 'Connection: keep-alive' --data-binary ${TDATA} --compressed
+        fi
+        ;;
+    e)  curl -s -H "Authorization: token=${TOKEN}" https://${SERVER}/service/marathon/v2/apps/${APP} | jq .app | jq -r 'del(.uris)' > $APP.json
+        FUPDATES=$(cat $APP.json)
+        LENGHT=$((${#FUPDATES}+1))
+        vim $APP.json
+        if [[ $VERBOSE == 1 ]]
+        then
+          echo "curl -H \"Authorization: token=${TOKEN}\" -H \"Accept: application/json\" -H \"Accept-Encoding: gzip, deflate, compress\" -H \"Content-Length: ${LENGHT}\" -H \"Content-Type: application/json; charset=UTF-8\" -X PUT \"https://${SERVER}/service/marathon/v2/apps/${APP}/?force=false&partialUpdate=false\" --data-binary @${APP}.json | jq ."
+        fi
+        curl -s -H "Authorization: token=${TOKEN}" -H 'Accept: application/json, text/javascript' -H "Accept-Encoding: gzip, deflate, compress" -H "Content-Length: ${LENGHT}" -H "Content-Type: application/json; charset=UTF-8" -X PUT "https://${SERVER}/service/marathon/v2/apps/${APP}/?force=false&partialUpdate=false" --data-binary @${APP}.json | jq .
+        ;;
+    m)  MCMD=$OPTARG
+        if [[ $VERBOSE == 1 ]]
+        then
+          echo "curl -s -H \"Authorization: token=${TOKEN}\" https://${SERVER}/mesos/${MCMD}"
+        fi
+        curl -s -H "Authorization: token=${TOKEN}" https://${SERVER}/mesos/${MCMD} | jq .
+        ;;
+    n)  TCMD=$OPTARG
+        if [[ $VERBOSE == 1 ]]
+        then
+          echo "curl -s -H \"Authorization: token=${TOKEN}\" https://${SERVER}/marathon/${TCMD} | jq ."
+        fi
+        curl -s -H "Authorization: token=${TOKEN}" https://${SERVER}/marathon/${TCMD} | jq .
+        ;;
+    d)  TIMESTAMP=$(date +%s)
+        curl -s -H "Authorization: token=${TOKEN}" https://${SERVER}/service/marathon/v2/deployments?_timestamp=${TIMESTAMP} | jq .
+        ;;
+    l)  curl -s -H "Authorization: token=${TOKEN}" https://${SERVER}/service/marathon/v2/apps | jq .
+        ;;
+    p)  PACTION=$OPTARG
+        if [[ $PACTION == "search" ]]
+        then
+          curl -s -H 'Content-Type: application/vnd.dcos.package.search-request+json;charset=UTF-8;version=v1' -H "Authorization: token=${TOKEN}" https://${SERVER}/package/search?_timestamp=1508862690973 -H 'Accept-Encoding: gzip, deflate, br' -H 'Accept-Language: en,es;q=0.8' -H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/61.0.3163.100 Safari/537.36' -H 'Content-Type: application/vnd.dcos.package.search-request+json;charset=UTF-8;version=v1' -H 'Accept: application/vnd.dcos.package.search-response+json;charset=utf-8;version=v1' -H 'Referer: https:/$SERVER}/' -H 'X-Requested-With: XMLHttpRequest' -H 'Connection: keep-alive' --data-binary '{}' --compressed | jq -r '.packages[] | "Name: \(.name) Version: \(.currentVersion)"'
+        elif [[ $PACTION == "list" ]]
+        then
+          curl -s -H 'Content-Type: application/vnd.dcos.package.list-request+json;charset=UTF-8;version=v1'  -H "Authorization: token=${TOKEN}" https://${SERVER}/package/list?_timestamp=1508862690973 -H 'Accept-Encoding: gzip, deflate, br' -H 'Accept-Language: en,es;q=0.8' -H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/61.0.3163.100 Safari/537.36' -H 'Accept: application/vnd.dcos.package.list-response+json;charset=utf-8;version=v1' -H 'Referer: https:/$SERVER}/' -H 'X-Requested-With: XMLHttpRequest' -H 'Connection: keep-alive' --data-binary '{}' --compressed | jq -r '.packages[] | .packageInformation | .packageDefinition |  "Name: \(.name) Version: \(.version)"'
+        elif [[ $PACTION == "install" ]]
+        then
+          curl -s -H 'Content-Type: application/vnd.dcos.package.install-request+json;charset=UTF-8;version=v1'  -H "Authorization: token=${TOKEN}" https://${SERVER}/package/install?_timestamp=1508862690973 -H 'Accept-Encoding: gzip, deflate, br' -H 'Accept-Language: en,es;q=0.8' -H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/61.0.3163.100 Safari/537.36' -H 'Accept: application/vnd.dcos.package.install-response+json;charset=utf-8;version=v1' -H 'Referer: https:/$SERVER}/' -H 'X-Requested-With: XMLHttpRequest' -H 'Connection: keep-alive' --data-binary '{}' --compressed | jq -r '.packages[] | .packageInformation | .packageDefinition |  "Name: \(.name) Version: \(.version)"'
+        elif [[ $PACTION == "uninstall" ]]
+        then
+          curl -s -H 'Content-Type: application/vnd.dcos.package.uninstall-request+json;charset=UTF-8;version=v1'  -H "Authorization: token=${TOKEN}" https://${SERVER}/package/uninstall?_timestamp=1508862690973 -H 'Accept-Encoding: gzip, deflate, br' -H 'Accept-Language: en,es;q=0.8' -H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/61.0.3163.100 Safari/537.36' -H 'Accept: application/vnd.dcos.package.uninstall-response+json;charset=utf-8;version=v1' -H 'Referer: https:/$SERVER}/' -H 'X-Requested-With: XMLHttpRequest' -H 'Connection: keep-alive' --data-binary '{}' --compressed | jq -r '.packages[] | .packageInformation | .packageDefinition |  "Name: \(.name) Version: \(.version)"'
+        fi
+        ;;
+    z)  SUMMARY=$OPTARG
+        ;;
+    y)  DESCRIPTION=$OPTARG
+        ;;
+    j)  PROJECT=ETHOSOPS
+        JOPTION=$OPTARG
+        curl -s -D- -u ${JIRA_USERNAME}:${JIRA_PASSWORD} -X POST --data '{ "fields": { "project": { "key": "'"$PROJECT"'" }, "summary": "'"$SUMMARY"'", "description": "'"$DESCRIPTION"'", "issuetype": { "name": "Task" }, "assignee":{"name":"sancheza"}  } }' -H "Content-Type: application/json" https://jira.corp.adobe.com/rest/api/2/issue | grep id  | cut -d, -f2 | cut -d: -f2
+        ;;
+    b) SUMMARY=$OPTARG
+       URL='https://events.pagerduty.com/v2/enqueue'
+       MESSAGE='{
+        "routing_key": "'${SERVICEKEY}'",
+        "event_action": "trigger",
+        "images": [],
+        "links": [],
+        "payload": {
+          "summary": "'${SUMMARY}'",
+          "source": "coral",
+          "severity": "info"
+        }
+      }'
+
+      DEDUP=$(curl -s -X POST $URL -d "${MESSAGE}" | jq -r .dedup_key)
+      DMESSAGE='{
+       "routing_key": "'${SERVICEKEY}'",
+       "event_action": "resolve",
+       "dedup_key": "'${DEDUP}'",
+       "images": [],
+       "links": [],
+       "payload": {
+         "summary": "'${SUMMARY}'",
+         "source": "coral",
+         "severity": "info"
+       }
+     }'
+
+     curl -s -X POST $URL -d "${DMESSAGE}"
+    esac
+done
+
+shift $((OPTIND-1))
+[ "$1" = "--" ] && shift
