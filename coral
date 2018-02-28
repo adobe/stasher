@@ -17,7 +17,7 @@
 # limitations under the License.
 #
 
-source config
+source "${BASH_SOURCE%/*}/config"
 
 show_help() {
   USAGE="$(basename "$0") [-h] [-s server] [-t task] [-k taskid] -- tool to manage DCOS clusters
