@@ -86,6 +86,12 @@ Use the config for DCOS_PASSWORD_DEV, DCOS_PASSWORD_STAGE AND DCOS_PASSWORD_PROD
 
 `SERVER=ethos01-ue1-control.prod.cloud.adobe.io; for i in "10.71.28.149" "10.71.30.90"; do ./stasher -s $SERVER -t $(./stasher -s $SERVER -t apigateway | grep $i | awk '{ print $2 }') -k -z "Api gateway restart in host $i" -y "Api gateway in host $i" -j; sleep 10;  done`
 
+## Send message to slack CHANNEL
+
+Go to https://channel.slack.com/apps/manage/custom-integrations and get the Webhook URL.
+
+CHANNEL="#stasher" WEBHOOKURL="https://hooks.slack.com/services/XXXX/XXXX/" USERNAME="sancheza" ./stasher -c "This is posted to #ethos-ops-standup and comes from a bot named sancheza"
+
 # Author
 
 Alejandro Sanchez Acosta <sancheza@adobe.com>
